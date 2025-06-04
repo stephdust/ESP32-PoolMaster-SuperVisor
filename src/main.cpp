@@ -5,7 +5,7 @@
                           https://randomnerdtutorials.com/esp32-i2c-master-slave-arduino/
 */
 
-#define PMSV_VERSION  "0.84"
+#define PMSV_VERSION  "0.85"
 
 // TODO
 //  bugs :  Restart PoolMaster does not work
@@ -32,7 +32,7 @@
 #include <WiFiMulti.h>
 
 #ifdef TARGET_WEBSERIAL
-  #include <WebSerial.h>
+#include <WebSerial.h>
 #endif
 
 #include <TimeLib.h>
@@ -54,12 +54,11 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <uptime.h>
-#include "AsyncMqttClient.h"      // Async. MQTT client
+#include <AsyncMqttClient.h>      // Async. MQTT client
 #include <ArduinoJson.h>          // JSON library
 
 const long gmtOffset_sec = 3600;
 const int daylightOffset_sec = 3600;
-
 
 #ifdef TARGET_PAPERTRAIL
 // PaperTrail
@@ -76,19 +75,19 @@ const int daylightOffset_sec = 3600;
 #define LOG_BUFFER_SIZE 400
 
 // Update triggers
-volatile bool mustUpdateNextion = false;
-volatile bool mustUpdatePoolMaster = false;
-volatile bool mustRebootPoolMaster = false;
+volatile bool mustUpdateNextion       = false;
+volatile bool mustUpdatePoolMaster    = false;
+volatile bool mustRebootPoolMaster    = false;
 
 // Update binary storage (HTTP Server)
-const char* defaultUpdatehost        = "myUpdateHttpServer:myport";
-const char* defaultnextionpath       = "/poolmaster/Nextion.tft";
-const char* defaultpoolmasterpath    = "/poolmaster/PoolMaster.bin";
-const char* defaultUpdateurlwatchdog = "/poolmaster/WatchDog.bin"; // not used today
+const char* defaultUpdatehost         = "myUpdateHttpServer:myport";
+const char* defaultnextionpath        = "/poolmaster/Nextion.tft";
+const char* defaultpoolmasterpath     = "/poolmaster/PoolMaster.bin";
+//const char* defaultUpdateurlwatchdog = "/poolmaster/WatchDog.bin"; // not used today
 
 #ifdef TARGET_PAPERTRAIL
 // PaperTrail log management
-const char* defaultpapertrailhost     = "mypapertrailserver";
+const char* defaultpapertrailhos      = "mypapertrailserver";
 const char* defaultpapertrailport     = "21858";
 #endif
 // MQTT Server
@@ -102,37 +101,44 @@ AsyncMqttClient MqttClient;
 TimerHandle_t MqttReconnectTimer;
 #define PAYLOAD_BUFFER_LENGTH 200
 
+#define _LHOSTNAME_   16
+#define _LSSID_       32
+#define _LURL_        32
+#define _LVERSION_    12
+#define _LTOPIC_      64
+#define _LMAC_        20
+
 String Updatehost;
 String nextionpath;
 String poolmasterpath;
-String Updateurlwatchdog; // not used today
+// char  Updateurlwatchdog[_LURL_]; // not used today
 String mqtt_server;
 String mqtt_port;
 String mqtt_topic;
 String mqtt_username;
 String mqtt_password;
-String myhostname;
-String hostname;
-char   currentUptime[25];
+char  myhostname[_LHOSTNAME_] = {0};
+char  hostname[_LHOSTNAME_]   = {0};
+char  currentUptime[25];
 
 #ifdef TARGET_PAPERTRAIL
 String papertrailhost;
 String papertrailport;
 #endif
 
-char  PoolMaster_Hostname[32]     = "unknown";
-char  PoolMaster_SSID[32]         = "unknown";
-char  PoolMaster_RSSI[12]         = "unknown";
-char  PoolMaster_IP[32]           = "unknown";
-char  PoolMaster_MAC[20]          = "unknown";
-char  PoolMaster_Version[12]      = "unknown";
-char  PoolMaster_TFTVersion[12]   = "unknown";
-char  PoolMaster_Uptime[64]       = "unknown";
-char  PoolMaster_MQTT_Server[32]  = "unknown";
-char  PoolMaster_MQTT_Topic[64]   = "unknown";
-uint8_t PoolMaster_StatusLEDs     = 0;
+char  PoolMaster_Hostname[_LHOSTNAME_]  = "unknown";
+char  PoolMaster_SSID[_LSSID_]          = "unknown";
+char  PoolMaster_RSSI[8]                = "unknown";
+char  PoolMaster_IP[_LURL_]             = "unknown";
+char  PoolMaster_MAC[_LMAC_]            = "unknown";
+char  PoolMaster_Version[_LVERSION_]    = "unknown";
+char  PoolMaster_TFTVersion[_LVERSION_] = "unknown";
+char  PoolMaster_Uptime[64]             = "unknown";
+char  PoolMaster_MQTT_Server[_LURL_]    = "unknown";
+char  PoolMaster_MQTT_Topic[_LTOPIC_]   = "unknown";
+uint8_t PoolMaster_StatusLEDs           = 0;
 
-#define  autoConfTimeout          500  // autoConf of PoolMaster network/mqtt is valid for 500 cycles
+#define  autoConfTimeout          500  // autoConf of PoolMaster network/mqtt is valid during 500 cycles
 int   autoConfNetwork             = 0;
 int   autoConfMQTT                = 0;
 
@@ -350,19 +356,8 @@ void TaskUpdatePoolMaster(void)
   //}
 }
 
-
-///////////// Update NEXTION and al ////////////////
-////////////////////////////////////////////////////
-void TheTasksLoop(void *pvParameters)
+void TaskUpdateNextion(void)
 {
-  static UBaseType_t hwm=0;     // free stack size
-  rtc_wdt_protect_off();
-  rtc_wdt_disable();
-  for (;;) {
-    delay(500);
-
-    if(mustUpdateNextion) {
-      mustUpdateNextion = false;
       Local_Logs_Dispatch("Nextion Update Requested");
       Local_Logs_Dispatch("Stopping PoolMaster...");
       pinMode(ENPin, OUTPUT);
@@ -436,6 +431,22 @@ void TheTasksLoop(void *pvParameters)
       pinMode(ENPin, INPUT);
       //rtc_wdt_enable();
       //rtc_wdt_protect_on();
+}
+
+///////////// Update NEXTION and al ////////////////
+////////////////////////////////////////////////////
+void TheTasksLoop(void *pvParameters)
+{
+  static UBaseType_t hwm=0;     // free stack size
+  rtc_wdt_protect_off();
+  rtc_wdt_disable();
+
+  for (;;) {
+    delay(500);
+
+    if(mustUpdateNextion) {
+      mustUpdateNextion = false;
+      TaskUpdateNextion();
     }
 
     if (mustUpdatePoolMaster) {
@@ -444,15 +455,16 @@ void TheTasksLoop(void *pvParameters)
     }
 
     if (mustRebootPoolMaster) {
-      mustUpdatePoolMaster = false;
+      mustRebootPoolMaster = false;
+//      Local_Logs_Dispatch("Stopping PoolMaster ...");
       pinMode(ENPin, OUTPUT);
       digitalWrite(ENPin, LOW);
-      delay(pdMS_TO_TICKS(600));
+      delay(pdMS_TO_TICKS(200));
+//      Local_Logs_Dispatch("Starting PoolMaster ...");
       pinMode(ENPin, OUTPUT);
       digitalWrite(ENPin, HIGH);
       pinMode(ENPin, INPUT);
     }
-
     stack_mon(hwm);
   }
 }
@@ -759,7 +771,7 @@ String PMRequest(char *question)
   if (autoConfNetwork > 0) {
     if (strcmp(question, "GET_WIFI_SSID") == 0)  return wifiManager.getWiFiSSID();
     if (strcmp(question, "GET_WIFI_PASS") == 0)  return wifiManager.getWiFiPass();
-    if (strcmp(question, "GET_HOSTNAME") == 0)   return hostname;
+    if (strcmp(question, "GET_HOSTNAME") == 0)   return String(hostname);
     autoConfNetwork--;
   }
   // when pressed "share mqtt Button"
@@ -931,7 +943,7 @@ String createHTML()
   h +=      "<button id=\"refresh\" class=\"normalButton\" onclick=\"document.location.reload(false)\"> Refresh </button>";
   h +=       "<br><br>";
   h +=       "<form action=\"/get\">";
-  h +=            "<input type=\"hidden\" id=\"\" name=rebootPoolMaster\"rebootPoolMaster\">";
+  h +=            "<input type=\"hidden\" id=\"rebootPoolMaster\" name=\"rebootPoolMaster\">";
   h +=            "<input type=\"submit\" class=\"rebootButton\" id=\"rebootPoolMaster\" value=\"Restart PoolMaster\">";
   h +=       "</form>";
   h +=       "<br>";
@@ -1041,7 +1053,8 @@ String createHTML()
 void loadSettings()
 {
   preferences.begin("PMSV", true);
-  hostname = preferences.getString("hostname", "");
+  //hostname = preferences.getString("hostname", "");
+  preferences.getString("hostname",hostname,15); 
 
   mqtt_server   = preferences.getString("mqtt_server", defaultmqtt_server);
   mqtt_port     = preferences.getString("mqtt_port", defaultmqtt_port);
@@ -1143,17 +1156,7 @@ void InitWebServer()
     }
 
     if (request->hasParam("rebootPoolMaster")) {
-
-      //  does not work, to investigate later
-      // mustRebootPoolMaster = true;
-
-      // direct call does not work too !
-      pinMode(ENPin, OUTPUT);
-      digitalWrite(ENPin, LOW);
-      delay(pdMS_TO_TICKS(600));
-      pinMode(ENPin, OUTPUT);
-      digitalWrite(ENPin, HIGH);
-      pinMode(ENPin, INPUT);
+      mustRebootPoolMaster = true;
     }
     
     if (request->hasParam("UpdatePoolMaster")) {
@@ -1184,9 +1187,9 @@ void setup() {
   pinMode(RESET_WIFI_PIN, INPUT_PULLUP);
 
   // Set hostname if any
-  if (hostname != "") {  // with ESP32, set hostname before wifi.mode !
-   myhostname = hostname + SuperVisor_Suffix; // SuperVisor Hostname
-    WiFi.setHostname(myhostname.c_str());
+  if (hostname[0] != '\0') {  // with ESP32, set hostname before wifi.mode !
+    sprintf(myhostname, "%s%s", hostname, SuperVisor_Suffix); // SuperVisor Hostname
+    WiFi.setHostname(myhostname);
   }
   WiFi.mode(WIFI_STA);
   
@@ -1217,7 +1220,7 @@ void setup() {
   }
 
   MDNS.addService("http", "tcp", 80);
-  MDNS.begin(myhostname.c_str());      
+  MDNS.begin(myhostname);      
 
   Local_Logs_Dispatch("");
   Local_Logs_Dispatch("WiFi connected ");
@@ -1281,7 +1284,8 @@ void setup() {
   xTaskCreatePinnedToCore(
     TheTasksLoop, 
     "TheTasksLoop",
-    4500, // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+//    4500, // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+    6000, // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
     NULL,  // No parameter is used
     1,  // Priority
     nullptr,  // Task handle is not used here
