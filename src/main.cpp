@@ -3,27 +3,29 @@
   WifiManager : https://github.com/tzapu/WiFiManager WiFi Configuration Magic
   I2C Slave and Master :  https://deepbluembedded.com/arduino-i2c-slave/
                           https://randomnerdtutorials.com/esp32-i2c-master-slave-arduino/
+                            // logo convertor https://elmah.io/tools/base64-image-encoder/
+  HTML, DOM, CSS :
+    https://mollify.noroff.dev/content/feu1/javascript-1/module-4/update-html?nav=
+    https://www.w3schools.com/howto/howto_js_progressbar.asp
+    https://www.youtube.com/watch?v=rtx27XZadIw
+
+  Logs from Serial :
+    https://github.com/WolfgangFranke/ESP32_remote_longterm_logging/blob/master/Ardunio-Code/ESP32_WebServer_Highcharts_WebLogger/ESP32_WebServer_Highcharts_WebLogger.ino
+    https://stackoverflow.com/questions/61755373/create-html-table-using-json-data-in-javascript
+
+  OTA : https://github.com/espressif/arduino-esp32/blob/master/libraries/HTTPUpdateServer/src/HTTPUpdateServer.h
 */
 
-#define PMSV_VERSION  "0.85"
-
-// TODO
-//  bugs :  Restart PoolMaster does not work
-//          Upgrade PoolMaster from webinterface does not work 
-
-//  create dynamic webpage for information part (remove Refresh button)
-//  webpage : display popup and progress bar when doing an upgrade
-//  Propose to format ESP32-PoolMaster (copy bootloader+partition+firmware.bin)
-//  replace elegantOTA and Webserial (remove commercial stuffs)
-//  check statusLEDS are correct
-//  draw a nicer status of LEDs
+// TODO :
+//  Propose to fully format ESP32-PoolMaster (copy bootloader+partition+firmware.bin)
+//  replace elegantOTA (remove commercial stuffs + too big)
 //  future : send info to external OLED on I2c Master
-//  clean and reduce footprint, remove unsed libs/include, image is too big
-//  PaperTrail consumes 8% of the disk !
+//  add PaperTrail but consumes 8% of the disk
+//  https + authentication
 
+#define PMSV_VERSION  "0.90"
 #define TARGET_TELNET
-#define TARGET_WEBSERIAL
-
+//#define TARGET_WEBSERIAL
 // PAPERTRAIL consumes 8% of the flashdisk !
 //#define TARGET_PAPERTRAIL
 
@@ -54,8 +56,8 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <uptime.h>
-#include <AsyncMqttClient.h>      // Async. MQTT client
-#include <ArduinoJson.h>          // JSON library
+#include <AsyncMqttClient.h>
+#include <ArduinoJson.h>
 
 const long gmtOffset_sec = 3600;
 const int daylightOffset_sec = 3600;
@@ -71,8 +73,8 @@ const int daylightOffset_sec = 3600;
   #define MAX_SRV_CLIENTS 3
 #endif
 
-#define BUFFER_SIZE 400
-#define LOG_BUFFER_SIZE 400
+#define BUFFER_SIZE 1024
+#define LOG_BUFFER_SIZE 1024
 
 // Update triggers
 volatile bool mustUpdateNextion       = false;
@@ -81,70 +83,45 @@ volatile bool mustRebootPoolMaster    = false;
 
 // Update binary storage (HTTP Server)
 const char* defaultUpdatehost         = "myUpdateHttpServer:myport";
-const char* defaultnextionpath        = "/poolmaster/Nextion.tft";
-const char* defaultpoolmasterpath     = "/poolmaster/PoolMaster.bin";
+const char* defaultNextionPath        = "/poolmaster/Nextion.tft";
+const char* defaultPoolmasterPath     = "/poolmaster/PoolMaster.bin";
 //const char* defaultUpdateurlwatchdog = "/poolmaster/WatchDog.bin"; // not used today
 
 #ifdef TARGET_PAPERTRAIL
 // PaperTrail log management
-const char* defaultpapertrailhos      = "mypapertrailserver";
+const char* defaultpapertrailhost      = "mypapertrailserver";
 const char* defaultpapertrailport     = "21858";
 #endif
 // MQTT Server
 const char* defaultmqtt_server        = "mymqttserver";
 const char* defaultmqtt_port          = "1883";
 const char* defaultmqtt_topic         = "PoolMaster";
-const char* defaultmqtt_username      = "mymqttusername";
-const char* defaultmqtt_password      = "mymqttuserpassword";
+const char* defaultmqtt_username      = "";
+const char* defaultmqtt_password      = "";
 
 AsyncMqttClient MqttClient;
 TimerHandle_t MqttReconnectTimer;
-#define PAYLOAD_BUFFER_LENGTH 200
+#define PAYLOAD_BUFFER_LENGTH 1024
 
 #define _LHOSTNAME_   16
 #define _LSSID_       32
-#define _LURL_        32
+#define _LURL_        128
 #define _LVERSION_    12
-#define _LTOPIC_      64
+#define _LTOPIC_      128
 #define _LMAC_        20
 
-String Updatehost;
-String nextionpath;
-String poolmasterpath;
-// char  Updateurlwatchdog[_LURL_]; // not used today
-String mqtt_server;
-String mqtt_port;
-String mqtt_topic;
-String mqtt_username;
-String mqtt_password;
 char  myhostname[_LHOSTNAME_] = {0};
 char  hostname[_LHOSTNAME_]   = {0};
 char  currentUptime[25];
 
-#ifdef TARGET_PAPERTRAIL
-String papertrailhost;
-String papertrailport;
-#endif
+JsonDocument PMInfo;
+JsonDocument SVSettings;
 
-char  PoolMaster_Hostname[_LHOSTNAME_]  = "unknown";
-char  PoolMaster_SSID[_LSSID_]          = "unknown";
-char  PoolMaster_RSSI[8]                = "unknown";
-char  PoolMaster_IP[_LURL_]             = "unknown";
-char  PoolMaster_MAC[_LMAC_]            = "unknown";
-char  PoolMaster_Version[_LVERSION_]    = "unknown";
-char  PoolMaster_TFTVersion[_LVERSION_] = "unknown";
-char  PoolMaster_Uptime[64]             = "unknown";
-char  PoolMaster_MQTT_Server[_LURL_]    = "unknown";
-char  PoolMaster_MQTT_Topic[_LTOPIC_]   = "unknown";
-uint8_t PoolMaster_StatusLEDs           = 0;
-
-#define  autoConfTimeout          500  // autoConf of PoolMaster network/mqtt is valid during 500 cycles
-int   autoConfNetwork             = 0;
-int   autoConfMQTT                = 0;
-
-// Nextion Update counter for feedback
+// Nextion/Poolmaster Update counter for feedback
 int UpdateCounter = 0;
+float percentCounter=0;
 int contentLength = 0;
+char barBuf[64] = {0};
 
 // Nextion PIN Numbers
 #define NEXT_RX           33 // Nextion RX pin
@@ -182,10 +159,50 @@ bool shouldSaveConfig = false;
   WiFiClient serverClients[MAX_SRV_CLIENTS];
 #endif
 AsyncWebServer Webserver(80);
+static bool OTAinProgress=0;
 
 // Local logline buffers
 char sbuf[BUFFER_SIZE];
 char local_sbuf[LOG_BUFFER_SIZE];
+
+#define LogLines_size   10  // max number of log-lines in log ring buffer
+#define LogLines_maxLen 100 // max lenght of each Log-Line text
+class LogsRingBuffer
+{
+  private:
+    int readindex = -1;
+    int writeindex = -1;
+    char LogLines_array[LogLines_size][LogLines_maxLen] = {0};  
+    
+  public:
+    void push(const char* prefix, char* line) {
+      int src, dst;
+      for (src = 0, dst = 0; src < strlen(line); src++)
+        if ((line[src] != '\r') && (line[src] != '\n')) 
+          line[dst++] = line[src];
+      line[dst] = 0;
+      if (line[0] == 0) return;
+      writeindex++;
+      writeindex %= LogLines_size;
+      snprintf(LogLines_array[writeindex], LogLines_maxLen-1, "%s%s", prefix, line);
+      LogLines_array[(writeindex+1)%LogLines_size][0] = 0 ; // tag next circular line, obsolete
+    }
+    void push(const char* prefix, const char* line) {
+      strcpy(sbuf, line);
+      push(prefix, sbuf);
+    }
+    char* pull() {
+      readindex++;
+      readindex %= LogLines_size;
+      char* l = LogLines_array[readindex];
+      if (*l == 0) { // obsolete data
+        readindex--;
+        return 0;
+      }
+      return l;
+   }
+};
+LogsRingBuffer myLogsRingBuffer;
 
 // OTA
 unsigned long ota_progress_millis = 0;
@@ -228,6 +245,8 @@ void Local_Logs_Dispatch(const char *_log_message, uint8_t _targets = 7, const c
     logger.log(WD_LOG, 1, "%s", _log_message);
   }
 #endif
+
+  myLogsRingBuffer.push("SV ", _log_message);
 }
 
 // Monitor free stack (display smallest value)
@@ -297,176 +316,156 @@ void TaskUpdatePoolMaster(void)
   //static UBaseType_t hwm=0;     // free stack size
   //rtc_wdt_protect_off();
   //rtc_wdt_disable();
-  //for (;;) {
-  //  if(mustUpdatePoolMaster) {
-    //  mustUpdatePoolMaster = false;
-      HTTPClient http;
-      
-      // begin http client
-        if(!http.begin(String("http://") + Updatehost + poolmasterpath)){
-          Local_Logs_Dispatch("Connection failed");
-        return;
-      }
-      snprintf(local_sbuf,sizeof(local_sbuf),"Requesting URL: %s",poolmasterpath.c_str());
-      Local_Logs_Dispatch(local_sbuf);
-    
-      // This will send the (get) request to the server
-      int code          = http.GET();
-      contentLength     = http.getSize();
+  HTTPClient http;
+  char url[_LURL_];
+  const char* host=SVSettings["Update Host"];
+  const char* path=SVSettings["Poolmaster Path"];
+  sprintf(url, "http://%s%s",host,path);
+  snprintf(local_sbuf,sizeof(local_sbuf),"Requesting URL: %s",url);
+  Local_Logs_Dispatch(local_sbuf);
+  // begin http client
+  if(!http.begin(url)){
+      Local_Logs_Dispatch("Connection failed");
+    return;
+  }
+
+  // This will send the (get) request to the server
+  int code          = http.GET();
+  contentLength     = http.getSize();
         
-      // Update the nextion display
-      if(code == 200){
-        Local_Logs_Dispatch("File received. Update PoolMaster...");
-        bool result;
-        snprintf(local_sbuf,sizeof(local_sbuf),"Start upload. File size is: %d bytes",contentLength);
-        Local_Logs_Dispatch(local_sbuf);
-        // Initialize ESP32Flasher
-        ESP32Flasher espflasher;
-        // set callback: What to do / show during upload..... Optional! Called every transfert integer %
-        UpdateCounter=0;
-   //   espflasher.setUpdateProgressCallback(nullptr);
-        espflasher.setUpdateProgressCallback([](){
-          UpdateCounter++;
-        //  snprintf(local_sbuf,sizeof(local_sbuf),"PoolMaster Update Progress %02d%%",UpdateCounter);
-          snprintf(local_sbuf,sizeof(local_sbuf),"PoolMaster Update Progress %4.1f%%",((((float)UpdateCounter*1024)/contentLength)*100));
-          Local_Logs_Dispatch(local_sbuf,1,"\r");
-        });
-        espflasher.espFlasherInit();//sets up Serial communication to another esp32
-
-        int connect_status = espflasher.espConnect();
-
-        if (connect_status != SUCCESS) {
-          Local_Logs_Dispatch("Cannot connect to target");
-        }else{
-          Local_Logs_Dispatch("Connected to target");
-
-          espflasher.espFlashBinStream(*http.getStreamPtr(),contentLength);
-        }
-
-      }else{
-        // else print http error
-        snprintf(local_sbuf,sizeof(local_sbuf),"HTTP error: %d",http.errorToString(code).c_str());
-        Local_Logs_Dispatch(local_sbuf);
-      }
-
-      http.end();
-      Local_Logs_Dispatch("Closing connection");
-//    }
-    //stack_mon(hwm);
-  //}
+  // Update the nextion display
+  if(code == 200){
+    OTAinProgress=1;
+    Local_Logs_Dispatch("File received. Update PoolMaster...");
+    bool result;
+    snprintf(local_sbuf,sizeof(local_sbuf),"Start upload. File size is: %d bytes",contentLength);
+    strcpy(barBuf, local_sbuf);
+    Local_Logs_Dispatch(local_sbuf);
+    // Initialize ESP32Flasher
+    ESP32Flasher espflasher;
+    // set callback: What to do / show during upload..... Optional! Called every transfert integer %
+    UpdateCounter=0;
+    espflasher.setUpdateProgressCallback([](){
+      UpdateCounter++;
+      percentCounter = (float(UpdateCounter*1024)/contentLength)*100.0;
+      snprintf(local_sbuf,sizeof(local_sbuf),"PoolMaster update %4.1f%%",percentCounter);
+      strcpy(barBuf, local_sbuf);
+      Local_Logs_Dispatch(local_sbuf,1,"\r");
+    });
+    espflasher.espFlasherInit();//sets up Serial communication to another esp32
+    int connect_status = espflasher.espConnect();
+    if (connect_status != SUCCESS) 
+      Local_Logs_Dispatch("Cannot connect to target");
+    else {
+      Local_Logs_Dispatch("Connected to target");
+      espflasher.espFlashBinStream(*http.getStreamPtr(),contentLength);
+    }
+  }
+  else {
+    snprintf(local_sbuf,sizeof(local_sbuf),"HTTP error: %d",http.errorToString(code).c_str());
+    Local_Logs_Dispatch(local_sbuf);
+  }
+  http.end();
+  Local_Logs_Dispatch("Closing connection");
+  OTAinProgress=0;
+  percentCounter=0;
+  //stack_mon(hwm);
 }
 
 void TaskUpdateNextion(void)
 {
-      Local_Logs_Dispatch("Nextion Update Requested");
-      Local_Logs_Dispatch("Stopping PoolMaster...");
-      pinMode(ENPin, OUTPUT);
-      digitalWrite(ENPin, LOW);
-      Local_Logs_Dispatch("Upgrading Nextion ...");
-   
-      HTTPClient http;
-      
-      // begin http client
-        if(!http.begin(String("http://") + Updatehost + nextionpath)){
-          Local_Logs_Dispatch("Connection failed");
-        return;
-      }
-      snprintf(local_sbuf,sizeof(local_sbuf),"Requesting URL: %s",nextionpath.c_str());
-      Local_Logs_Dispatch(local_sbuf);
+  Local_Logs_Dispatch("Nextion Update Requested");
+  Local_Logs_Dispatch("Stopping PoolMaster...");
+  pinMode(ENPin, OUTPUT);
+  digitalWrite(ENPin, LOW);
+  Local_Logs_Dispatch("Upgrading Nextion ...");
+
+  HTTPClient http;
+  char url[_LURL_];
+  const char* host=SVSettings["Update Host"];
+  const char* path=SVSettings["Nextion Path"];
+  sprintf(url, "http://%s%s",host,path); 
+  snprintf(local_sbuf,sizeof(local_sbuf),"Requesting URL: %s",url);
+  Local_Logs_Dispatch(local_sbuf);
+ 
+  if(!http.begin(url)){
+    Local_Logs_Dispatch("Connection failed");
+    return;
+    }
+
     
-      // This will send the (get) request to the server
-      int code          = http.GET();
-      contentLength     = http.getSize();
+  // This will send the (get) request to the server
+  int code          = http.GET();
+  contentLength     = http.getSize();
         
-      // Update the nextion display
-      if(code == 200){
-        Local_Logs_Dispatch("File received. Update Nextion...");
-        bool result;
+  // Update the nextion display
+  if(code == 200){
+    OTAinProgress=1;
+    Local_Logs_Dispatch("File received. Update Nextion...");
+    bool result;
 
-        // initialize ESPNexUpload
-        ESPNexUpload nextion(115200);
-        // set callback: What to do / show during upload..... Optional! Called every 2048 bytes
-        UpdateCounter=0;
-        nextion.setUpdateProgressCallback([](){
-          UpdateCounter++;
-          snprintf(local_sbuf,sizeof(local_sbuf),"Nextion Update Progress %4.1f%%",((((float)UpdateCounter*2048)/contentLength)*100));
-          Local_Logs_Dispatch(local_sbuf,1,"\r");
-        });
-        // prepare upload: setup serial connection, send update command and send the expected update size
-        result = nextion.prepareUpload(contentLength);
-        
-        if(!result){
-            snprintf(local_sbuf,sizeof(local_sbuf),"Error: %s",nextion.statusMessage.c_str());
-            Local_Logs_Dispatch(local_sbuf);
-            //Serial.println("Error: " + nextion.statusMessage);
-        }else{
-            snprintf(local_sbuf,sizeof(local_sbuf),"Start upload. File size is: %d bytes",contentLength);
-            Local_Logs_Dispatch(local_sbuf);
-            // Upload the received byte Stream to the nextion
-            result = nextion.upload(*http.getStreamPtr());
-            
-            if(result){
-              Local_Logs_Dispatch("Successfully updated Nextion");
-            }else{
-              snprintf(local_sbuf,sizeof(local_sbuf),"Error updating Nextion: %s",nextion.statusMessage.c_str());
-              Local_Logs_Dispatch(local_sbuf);
-            }
-
-            // end: wait(delay) for the nextion to finish the update process, send nextion reset command and end the serial connection to the nextion
-            nextion.end();
-            pinMode(NEXT_RX,INPUT);
-            pinMode(NEXT_TX,INPUT);
-        }
-        
-      }else{
-        // else print http error
-        snprintf(local_sbuf,sizeof(local_sbuf),"HTTP error: %d",http.errorToString(code).c_str());
+    // initialize ESPNexUpload
+    ESPNexUpload nextion(115200);
+    // set callback: What to do / show during upload..... Optional! Called every 2048 bytes
+    UpdateCounter=0;
+    nextion.setUpdateProgressCallback([](){
+      UpdateCounter++;
+      percentCounter = (float(UpdateCounter*2048)/contentLength)*100.0;
+      snprintf(local_sbuf,sizeof(local_sbuf),"Nextion update %4.1f%%",percentCounter);
+      strcpy(barBuf, local_sbuf);
+      Local_Logs_Dispatch(local_sbuf,1,"\r");
+    });
+    // prepare upload: setup serial connection, send update command and send the expected update size
+    result = nextion.prepareUpload(contentLength);
+    if(!result){
+        snprintf(local_sbuf,sizeof(local_sbuf),"Error: %s",nextion.statusMessage.c_str());
+        Local_Logs_Dispatch(local_sbuf);
+        //Serial.println("Error: " + nextion.statusMessage);
+    } 
+    else {
+      snprintf(local_sbuf,sizeof(local_sbuf),"Start upload. File size is: %d bytes",contentLength);
+      strcpy(barBuf, local_sbuf);
+      Local_Logs_Dispatch(local_sbuf);
+      // Upload the received byte Stream to the nextion
+      result = nextion.upload(*http.getStreamPtr());
+      if(result)
+        Local_Logs_Dispatch("Successfully updated Nextion");
+      else {
+        snprintf(local_sbuf,sizeof(local_sbuf),"Error updating Nextion: %s",nextion.statusMessage.c_str());
         Local_Logs_Dispatch(local_sbuf);
       }
 
-      http.end();
-      Local_Logs_Dispatch("Closing connection");
-      Local_Logs_Dispatch("Starting PoolMaster ...");
-      digitalWrite(ENPin, HIGH);
-      pinMode(ENPin, INPUT);
-      //rtc_wdt_enable();
-      //rtc_wdt_protect_on();
+      // end: wait(delay) for the nextion to finish the update process, send nextion reset command and end the serial connection to the nextion
+      nextion.end();
+      pinMode(NEXT_RX,INPUT);
+      pinMode(NEXT_TX,INPUT);
+
+      percentCounter=0;
+      OTAinProgress=0;
+    }
+  }
+  else {
+    // else print http error
+    snprintf(local_sbuf,sizeof(local_sbuf),"HTTP error: %d",http.errorToString(code).c_str());
+    Local_Logs_Dispatch(local_sbuf);
+  }
+
+  http.end();
+  Local_Logs_Dispatch("Closing connection");
+  Local_Logs_Dispatch("Starting PoolMaster ...");
+  digitalWrite(ENPin, HIGH);
+  pinMode(ENPin, INPUT);
+  //rtc_wdt_enable();
+  //rtc_wdt_protect_on();
 }
 
-///////////// Update NEXTION and al ////////////////
-////////////////////////////////////////////////////
-void TheTasksLoop(void *pvParameters)
+void TelnetToTaskUpdatePoolMaster()
 {
-  static UBaseType_t hwm=0;     // free stack size
-  rtc_wdt_protect_off();
-  rtc_wdt_disable();
-
-  for (;;) {
-    delay(500);
-
-    if(mustUpdateNextion) {
-      mustUpdateNextion = false;
-      TaskUpdateNextion();
-    }
-
-    if (mustUpdatePoolMaster) {
-      mustUpdatePoolMaster = false;
-      TaskUpdatePoolMaster();
-    }
-
-    if (mustRebootPoolMaster) {
-      mustRebootPoolMaster = false;
-//      Local_Logs_Dispatch("Stopping PoolMaster ...");
-      pinMode(ENPin, OUTPUT);
-      digitalWrite(ENPin, LOW);
-      delay(pdMS_TO_TICKS(200));
-//      Local_Logs_Dispatch("Starting PoolMaster ...");
-      pinMode(ENPin, OUTPUT);
-      digitalWrite(ENPin, HIGH);
-      pinMode(ENPin, INPUT);
-    }
-    stack_mon(hwm);
-  }
+  WiFiClient telnet;
+  if (!telnet.connect(WiFi.localIP(), 23)) return;
+  telnet.write("S\r\n");
+  delay(3000); // must add a delay, otherwise telnet closes too early
+  // telnet.end();
 }
 
 //////////////////////// ELEGANT OTA //////////////////////////
@@ -474,6 +473,8 @@ void TheTasksLoop(void *pvParameters)
 void onOTAStart() {
   // Log when OTA has started
   Local_Logs_Dispatch("OTA update started!");
+  OTAinProgress=1;
+  percentCounter=0;
   // <Add your own code here>
 }
 
@@ -481,8 +482,11 @@ void onOTAProgress(size_t current, size_t final) {
   // Log every 1 second
   if (millis() - ota_progress_millis > 1000) {
     ota_progress_millis = millis();
-    snprintf(local_sbuf,sizeof(local_sbuf),"OTA Progress Current: %u bytes, Final: %u bytes", current, final);
-    Local_Logs_Dispatch(local_sbuf);
+      percentCounter = (float(current)/final)*100.0;
+      snprintf(local_sbuf,sizeof(local_sbuf),"SurperVisor update %4.1f%%",percentCounter);
+      strcpy(barBuf, local_sbuf);
+      //snprintf(local_sbuf,sizeof(local_sbuf),"OTA Progress Current: %u bytes, Final: %u bytes", current, final);
+      Local_Logs_Dispatch(local_sbuf);
   }
 }
 
@@ -493,6 +497,8 @@ void onOTAEnd(bool success) {
   } else {
     Local_Logs_Dispatch("There was an error during OTA update!");
   }
+  OTAinProgress=0;
+  percentCounter=0;
   // <Add your own code here>
 }
 
@@ -521,16 +527,14 @@ void cmdExecute(char _command) {
     break;
     case 'Q':  // PoolMaster Start
       Local_Logs_Dispatch("Starting PoolMaster ...");
-      if(digitalRead(ENPin)==LOW)
-      {
+      if(digitalRead(ENPin)==LOW) {
         pinMode(ENPin, OUTPUT);
         digitalWrite(ENPin, HIGH);
         pinMode(ENPin, INPUT);
       }
     break;
-
     case 'S':  // PoolMaster Update
- //     mustUpdatePoolMaster = true;
+      //mustUpdatePoolMaster = true;
       TaskUpdatePoolMaster();
     break;
     case 'T':  // Nextion Update
@@ -566,7 +570,7 @@ void recvMsg(uint8_t *data, size_t len) {
 }
 #endif
 
-void uptime()
+void upcurrenttime()
 {
     uptime::calculateUptime();
     sprintf(currentUptime, "%dd-%02dh-%02dm-%02ds", uptime::getDays(), uptime::getHours(), uptime::getMinutes(), uptime::getSeconds());
@@ -574,86 +578,57 @@ void uptime()
 
 // MQTT Engine
 // ***********
-
-  /*void onMqttSubscribe(uint16_t packetId, uint8_t qos) {}
+/*void onMqttSubscribe(uint16_t packetId, uint8_t qos) {}
 void onMqttUnSubscribe(uint16_t packetId) {}
 void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {}
 void onMqttPublish(uint16_t packetId) {}
 */
 
-const char* convert2bin(uint8_t data)
-{
-  const char *bit_rep[16] = {
-    [ 0] = "0000", [ 1] = "0001", [ 2] = "0010", [ 3] = "0011",
-    [ 4] = "0100", [ 5] = "0101", [ 6] = "0110", [ 7] = "0111",
-    [ 8] = "1000", [ 9] = "1001", [10] = "1010", [11] = "1011",
-    [12] = "1100", [13] = "1101", [14] = "1110", [15] = "1111", };
-  static char result[9];
-  sprintf(result, "%s%s", bit_rep[data >> 4], bit_rep[data & 0x0F]);
-  return result;
-}
-
 void mqttPublish()
-{
-  String subtopic = "/Supervision";
+{  
   char Payload[PAYLOAD_BUFFER_LENGTH];
+  char topic[_LTOPIC_];
+  const char* roottopic = SVSettings["MQTT Topic"];
+  sprintf(topic, "%s/Supervision/PoolMaster", roottopic);
   if (!MqttClient.connected()) return;
+  
+  {
+    // remove unnecessary data
+  JsonDocument cleanJson = PMInfo;
+  cleanJson.remove("MQTT Server");
+  cleanJson.remove("MQTT Port");
+  cleanJson.remove("MQTT Topic");
+  cleanJson.remove("MQTT Username");
+  cleanJson.remove("MQTT Password");
+  cleanJson.remove("Update Host");
+  cleanJson.remove("Poolmaster Path");
+  cleanJson.remove("Nextion Path");
 
-  {
-    DynamicJsonDocument root(2048);
-    String Stopic = mqtt_topic + subtopic + "/PoolMaster/Version";
-    root["Version"]    = PoolMaster_Version;
-    root["TFTVersion"] = PoolMaster_TFTVersion;
-    size_t n = serializeJson(root, Payload);
-    if (MqttClient.publish(Stopic.c_str(), 1, true, Payload, n) == 0) {
-      snprintf(local_sbuf,sizeof(local_sbuf),"Supervisor, unable to publish MQTT %s Payload: %s - Payload size: %d", Stopic.c_str(), Payload, sizeof(Payload));
+  size_t n = serializeJson(cleanJson, Payload);
+  if (MqttClient.publish(topic, 1, true, Payload, n) == 0) {
+      snprintf(local_sbuf,sizeof(local_sbuf),"Supervisor, unable to publish MQTT %s Payload: %s - Payload size: %d", topic, Payload, sizeof(Payload));
       Local_Logs_Dispatch(local_sbuf);
-    }
   }
-  {
-    DynamicJsonDocument root(2048);
-    String Stopic = mqtt_topic + subtopic + "/PoolMaster/Network";
-    root["Hostname"]   = PoolMaster_Hostname;
-    root["IP"]         = PoolMaster_IP;
-    root["MAC"]        = PoolMaster_MAC;
-    root["SSID"]       = PoolMaster_SSID;
-    root["RSSI"]       = PoolMaster_RSSI;
-    size_t n = serializeJson(root, Payload);
-    MqttClient.publish(Stopic.c_str(), 1, true, Payload, n);
   }
+  
+  sprintf(topic, "%s/Supervision/SuperVisor", roottopic);
+  if (!MqttClient.connected()) return;
   {
-    DynamicJsonDocument root(2048);
-    String Stopic = mqtt_topic + subtopic + "/PoolMaster/Status";
-    root["Uptime"]     = PoolMaster_Uptime;
-    root["StatusLEDs"] = convert2bin(PoolMaster_StatusLEDs);
-    size_t n = serializeJson(root, Payload);
-    MqttClient.publish(Stopic.c_str(), 1, true, Payload, n);
+    // remove unnecessary data
+  JsonDocument cleanJson = SVSettings;
+  cleanJson.remove("MQTT Server");
+  cleanJson.remove("MQTT Port");
+  cleanJson.remove("MQTT Topic");
+  cleanJson.remove("MQTT Username");
+  cleanJson.remove("MQTT Password");
+  cleanJson.remove("LED");
+  cleanJson.remove("Display Firmware");
+
+  size_t n = serializeJson(cleanJson, Payload);
+  if (MqttClient.publish(topic, 1, true, Payload, n) == 0) {
+      snprintf(local_sbuf,sizeof(local_sbuf),"Supervisor, unable to publish MQTT %s Payload: %s - Payload size: %d", topic, Payload, sizeof(Payload));
+      Local_Logs_Dispatch(local_sbuf);
   }
-  {
-    DynamicJsonDocument root(2048);
-    String Stopic = mqtt_topic + subtopic + "/SuperVisor/Version";
-    root["Version"]    = PMSV_VERSION;
-    size_t n = serializeJson(root, Payload);
-    MqttClient.publish(Stopic.c_str(), 1, true, Payload, n);
-  }
-  {
-    DynamicJsonDocument root(2048);
-    String Stopic = mqtt_topic + subtopic + "/SuperVisor/Network";
-    root["Hostname"]   = WiFi.getHostname();
-    root["IP"]         = WiFi.localIP().toString();
-    root["MAC"]        = WiFi.macAddress();
-    root["SSID"]       = wifiManager.getWiFiSSID();
-    root["RSSI"]       = WiFi.RSSI();
-    size_t n = serializeJson(root, Payload);
-    MqttClient.publish(Stopic.c_str(), 1, true, Payload, n);
-  }
-  {
-    DynamicJsonDocument root(2048);
-    String Stopic = mqtt_topic + subtopic + "/SuperVisor/Status";
-    uptime();
-    root["Uptime"]     = currentUptime;
-    size_t n = serializeJson(root, Payload);
-    MqttClient.publish(Stopic.c_str(), 1, true, Payload, n);
   }
 }
 
@@ -664,17 +639,12 @@ void onMqttDisconnect(AsyncMqttClientDisconnectReason reason)
 
 void onMqttConnect(bool sessionPresent) 
 {
-  mqttPublish();
-  delay(1000);
-  MqttClient.disconnect();
+  //mqttPublish();
 }
 
-void connectToMqtt() {
+void connectToMqtt() 
+{
   MqttClient.connect();
-// if (MqttClient.connected()) 
-//    snprintf(local_sbuf,sizeof(local_sbuf),"Supervisor connected to MQTT %s=%d=%s=%s", mqtt_server.c_str(), atol(mqtt_port.c_str()), mqtt_username.c_str(), mqtt_password.c_str());
-//   else snprintf(local_sbuf,sizeof(local_sbuf),"Supervisor NOT connected to MQTT %s=%d=%s=%s", mqtt_server.c_str(), atol(mqtt_port.c_str()), mqtt_username.c_str(), mqtt_password.c_str());
-//  Local_Logs_Dispatch(local_sbuf);
 }
 
 void MqttInit()
@@ -688,10 +658,14 @@ void MqttInit()
    // MqttClient.onUnsubscribe(onMqttUnSubscribe);
    // MqttClient.onMessage(onMqttMessage);
    // MqttClient.onPublish(onMqttPublish);
+   const char* mqtt_server=SVSettings["MQTT Server"];
+   int mqtt_port=atol(SVSettings["MQTT Port"]);
+   const char* mqtt_username=SVSettings["MQTT Username"];
+   const char* mqtt_password=SVSettings["MQTT Password"];
 
-    MqttClient.setServer(mqtt_server.c_str(), atol(mqtt_port.c_str()));
-    if (mqtt_username != "")
-        MqttClient.setCredentials(mqtt_username.c_str(), mqtt_password.c_str());
+    MqttClient.setServer(mqtt_server, mqtt_port);
+    if (*mqtt_username != 0)
+        MqttClient.setCredentials(mqtt_username, mqtt_password);
 
     connectToMqtt();
 }
@@ -705,85 +679,19 @@ void onI2CRequest(void)
   return; 
 }
 
-void PMReport(char *info)
-{
-  char* delim=strstr(info, "=");
-  if (!delim) return;
-  delim[0]=0;
-  delim++;
-  if (delim[0]==0) return;
-
-  if (strcmp(info, "PM_SSID")==0) {
-    strcpy(PoolMaster_SSID, delim);
-    return;
-  }
-  if (strcmp(info, "PM_RSSI")==0) {
-    strcpy(PoolMaster_RSSI, delim);
-    return;
-  }
-  if (strcmp(info, "PM_HOSTNAME")==0) {
-    strcpy(PoolMaster_Hostname, delim);
-    return;
-  }
-  if (strcmp(info, "PM_IP")==0) {
-    strcpy(PoolMaster_IP, delim);
-    return;
-  } 
-  if (strcmp(info, "PM_MAC")==0) {
-    strcpy(PoolMaster_MAC, delim);
-    return;
-  } 
-  if (strcmp(info, "PM_FIRMW")==0) {
-    strcpy(PoolMaster_Version, delim);
-    return;
-  }
-  if (strcmp(info, "PM_TFTFIRMW")==0) {
-    strcpy(PoolMaster_TFTVersion, delim);
-    return;
-  }
-  if (strcmp(info, "PM_UPTIME")==0) {
-    strcpy(PoolMaster_Uptime, delim);
-    return;
-  }
-  if (strcmp(info, "PM_MQTT_SERVER")==0) {
-    strcpy(PoolMaster_MQTT_Server, delim);
-    return;
-  }
-  if (strcmp(info, "PM_MQTT_TOPIC")==0) {
-    strcpy(PoolMaster_MQTT_Topic, delim);
-    return;
-  }
-  if (strcmp(info, "PM_STATUSLEDS")==0) {
-    uint8_t led = 0;
-    sscanf(delim, "%u", &led);
-    PoolMaster_StatusLEDs = led;
-    return;
-  }
-
-}
-
 String PMRequest(char *question)
 {
-  // when pressed "share network button"
-  // configure poolmaster network but only during a certain time
-  // to avoid conflicts when config is done from Nextion display
+  if (strcmp(question, "GET_WIFI_SSID") == 0)  return wifiManager.getWiFiSSID();
+  if (strcmp(question, "GET_WIFI_PASS") == 0)  return wifiManager.getWiFiPass();
+  if (strcmp(question, "GET_HOSTNAME") == 0)   return String(hostname);
 
-  if (autoConfNetwork > 0) {
-    if (strcmp(question, "GET_WIFI_SSID") == 0)  return wifiManager.getWiFiSSID();
-    if (strcmp(question, "GET_WIFI_PASS") == 0)  return wifiManager.getWiFiPass();
-    if (strcmp(question, "GET_HOSTNAME") == 0)   return String(hostname);
-    autoConfNetwork--;
-  }
-  // when pressed "share mqtt Button"
-  // configure poolmaster mqtt 
-  if (autoConfMQTT > 0) {
-    if (strcmp(question, "GET_MQTT_SERVER") == 0)   return mqtt_server;
-    if (strcmp(question, "GET_MQTT_PORT") == 0)     return mqtt_port;
-    if (strcmp(question, "GET_MQTT_TOPIC") == 0)    return mqtt_topic;
-    if (strcmp(question, "GET_MQTT_USERNAME") == 0) return mqtt_username;
-    if (strcmp(question, "GET_MQTT_PASSWORD") == 0) return mqtt_password;
-    autoConfMQTT--;
-  }
+  //  PM will update its MQTT if Topic has changed
+  if (strcmp(question, "GET_MQTT_SERVER") == 0)   return SVSettings["MQTT Server"];
+  if (strcmp(question, "GET_MQTT_PORT") == 0)     return SVSettings["MQTT Port"];
+  if (strcmp(question, "GET_MQTT_TOPIC") == 0)    return SVSettings["MQTT Topic"];
+  if (strcmp(question, "GET_MQTT_USERNAME") == 0) return SVSettings["MQTT Username"];
+  if (strcmp(question, "GET_MQTT_PASSWORD") == 0) return SVSettings["MQTT Password"];
+
   return String("");
 }
 
@@ -800,11 +708,12 @@ void onI2CReceive(int len)
   String Svalue = "Ok";
 
   // PoolMaster sends reports when question starts with PM_
-  if (strncmp(question, "PM_", 3) == 0) {
-    PMReport(question);
-  }
+  // consume too much I2C bandwidth, use Serial instead.
+  //if (strncmp(question, "PM_", 3) == 0) {
+  //  PMReport(question+3);
+  //}
   // PoolMaster wants info from SuperVisor
-  else if (strncmp(question, "GET_", 4) == 0) {
+  if (strncmp(question, "GET_", 4) == 0) {
     Svalue = PMRequest(question);
   }
   else {  // Just a message to print
@@ -818,369 +727,761 @@ void onI2CReceive(int len)
   Wire.slaveWrite((uint8_t *)Svalue.c_str(), I2C_MAXMESSAGE); 
 }
 
-
-
 void saveConfigCallback() 
 {
    shouldSaveConfig = true;
 }
 
-String createHTML()
+// HTML pages ***
+// **************
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html><head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PoolMaster SuperVisor</title>
+  </head>
+<style>
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  }
+body{
+  background: linear-gradient(AliceBlue, LightCyan, MediumBlue);
+  background-size: cover;
+  background-attachment: fixed;
+  }
+.navbar{
+  height: 50px;
+  display: flex; 
+  align-items: center;
+  width: 100%;
+  padding: 14px 14px;
+  background-color: #1b4cd3;
+  position: fixed;
+  z-index: 1000;
+  }
+.navbar .nav-header{
+  display: inline;
+  }
+.navbar .nav-header .nav-logo{
+  display: inline-block;
+  margin-top: 5px;
+  }
+.navbar .nav-title{
+    display: none;
+  }
+.navbar .nav-links{
+  display: inline;
+  float: left;
+  font-size: 18px;
+  }
+.navbar .nav-links a{
+  padding: 10px 12px;
+  text-decoration: none;
+  font-weight: 550;
+  color: white;
+  }
+.navbar .nav-links button{
+  padding: 10px 12px;
+  text-decoration: none;
+  font-weight: 550;
+  cursor: pointer;
+  color: white;
+  border: none;
+  outline: none;
+  background-color: #1b4cd3;
+  }
+.navbar .nav-links a:hover{
+  background-color: rgba(0,0,0,0.3);
+  }
+  .navbar .nav-links button:hover{
+  background-color: rgba(0,0,0,0.3);
+  }
+.navbar #nav-check, .navbar .nav-btn{
+  display: none;
+  }
+@media (max-width: 600px){
+  .navbar .nav-btn{
+    display: inline-block;
+    position: absolute;
+    top: 0px;
+    right: -20px;
+    }
+  .navbar #idnav-title, .navbar .nav-title{
+    margin-top: 3px;
+    color: white;
+    display: block;
+    user-select: none; 
+    font-size: large;
+    padding: 15px;
+  }
+  .navbar .nav-btn label{
+    display: inline-block;
+    width: 80px;
+    height: 50px;
+    padding: 15px;
+    }
+  .navbar .nav-btn label span{
+    display: block;
+    height: 10px;
+    width: 25px;
+    border-top: 3px solid #eee;
+    }
+  .navbar .nav-btn label:hover, .navbar #nav-check:checked ~ .nav-btn label{
+    background-color: rgb(9,14,90);
+    }
+  .navbar .nav-links{
+    position: absolute;
+    display: block;
+    text-align: 50%;
+    background-color: rgb(9,14,90);
+    transition: all 0.3s ease-in;
+    overflow-y: hidden;
+    top: 50px;
+    right: 0px;
+    }
+  .navbar .nav-links a{
+    display: block;
+    }
+  .navbar .nav-links button{
+    display: block;
+    background-color: rgb(9,14,90);
+    border: none;
+    outline: none;
+    }
+  .navbar #nav-check:not(:checked) ~ .nav-links{
+    height: 0px;
+    }
+  .navbar #nav-check:checked ~ .nav-links{
+    height: calc(100vh - 50px);
+    overflow-y: auto;
+    }
+  }
+.tabcontent {
+  color: black;
+  display: none;
+  padding: 60px 7px 10px;
+  height: 100%;
+}
+.textblocklogs {
+  background-color: white;
+  font-size: small;
+  }
+.textblockabout {
+  background-color: white;
+  font-size: medium;
+  }
+.infotable {
+  background-color: white;
+  padding: 0px 7px 0px 7px;
+  font-size: small;
+  }
+.infotable th:nth-child(1) {
+  text-align: left;
+  width: 130px;
+}
+.infotable th:nth-child(2) {
+  text-align: left;
+  white-space: nowrap; 
+  text-overflow:ellipsis; 
+  overflow: hidden;
+}
+.normalButton {
+  background-color: Silver;
+  display: inline-block; font-weight: bold; border: 1px solid #2d6898;
+  color: white;
+  padding: 10px 15px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-right: 10px;
+  height:40px;
+  width:300px;
+}
+.redButton {
+  background-color: Red;
+  display: inline-block; font-weight: bold; border: 1px solid #2d6898;
+  color: white;
+  padding: 10px 15px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-right: 10px;
+  height:40px;
+  width:300px;
+}
+.blackButton {
+  background-color: Black;
+  display: inline-block; font-weight: bold; border: 1px solid #2d6898;
+  color: white;
+  padding: 10px 15px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-right: 10px;
+  height:40px;
+  width:300px;
+}
+.shareButton {
+  background-color: SkyBlue;
+  display: inline-block; font-weight: bold; border: 1px solid #2d6898;
+  color: white;
+  padding: 10px 15px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-right: 10px;
+  height:40px;
+  width:300px;
+}
+.formsettings form  { display: table;      }
+.formsettings p     { display: table-row;  }
+.formsettings label { display: table-cell; }
+.formsettings input { display: table-cell; width: 300px;}
+.marge5 { margin-left: 2em; }
+#myProgress {
+  display: none
+  width:300px;
+  background-color: #A9A9A9;
+  border-radius: 15px;
+}
+#myBar {
+  display: none
+  width: 0;
+  height: 20px;
+  background-color: blue;
+  text-align: center;
+  line-height: 20px;
+  color: white;
+  border-radius: 15px;
+  white-space: nowrap;
+}
+</style>
+
+<div class="navbar">
+  <div class="nav-header">
+    <div class="nav-logo"> 
+      <a href="#">
+         <img alt="logo" src="data:image/jpeg;base64,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" />
+      </a>
+    </div>
+  </div>
+  <div class="nav-title" id="idnav-title">PoolMaster Supervision</div>
+  <input type="checkbox" id="nav-check">
+  <div class="nav-btn">
+    <label for="nav-check">
+      <span></span>
+      <span></span>
+      <span></span>
+    </label>
+  </div>
+  <div class="nav-links">
+    <button class="tablink" onclick="openPage('Poolmaster', this)" id="defaultOpen">Poolmaster</button>
+    <button class="tablink" onclick="openPage('Settings', this)">Settings</button>
+    <button class="tablink" onclick="openPage('Logs', this)">Logs</button>
+    <button class="tablink" onclick="openPage('Tools', this)">Tools</button>
+    <button class="tablink" onclick="openPage('About', this)">About</button>
+  </div>
+  <script>
+function openPage(pageName,elmnt) {
+  var i, tabcontent, tablinks;
+  document.getElementById("nav-check").checked = false;
+  tabcontent = document.getElementsByClassName("tabcontent");
+  for (i = 0; i < tabcontent.length; i++) {
+    tabcontent[i].style.display = "none";
+  }
+  tablinks = document.getElementsByClassName("tablink");
+  for (i = 0; i < tablinks.length; i++) {
+    tablinks[i].style.backgroundColor = "";
+  }
+  document.getElementById(pageName).style.display = "block";
+}
+function startTab() {
+  document.getElementById("defaultOpen").click();
+}
+let mqtt_server = "";
+let mqtt_port = "";
+let mqtt_topic = "";
+let mqtt_username = "";
+let mqtt_password = "";
+let update_host = "";
+let poolmasterpath = "";
+let nextionpath = "";
+
+</script>
+</div>
+
+<body>
+
+<!-- 1st INFO Page -->
+<div id="Poolmaster" class="tabcontent">
+  <script>
+    function generateTable(source, target, title, loadsettings) {
+      var xhttp = new XMLHttpRequest();
+      xhttp.onreadystatechange = function() {
+        if (this.readyState == 4 && this.status == 200) {
+          data = JSON.parse(this.responseText);
+          let html = "<p><table border='0'>";
+          html += "<tr><th>" + title + "</th></tr>";
+          for (var key in data) {
+            if (data[key] != "none") {
+              html += "<tr><td>" + key + ":</td>"; 
+              html += "<td>" + data[key] + "</td></tr>";
+            }
+          }
+          html += "</p></table>";
+          document.getElementById(target).innerHTML = html;
+          if (loadsettings == 1) {
+            mqtt_server    = data["MQTT Server"];
+            mqtt_port      = data["MQTT Port"];
+            mqtt_topic     = data["MQTT Topic"];
+            update_host    = data["Update Host"];
+            poolmasterpath = data["Poolmaster Path"];
+            nextionpath    = data["Nextion Path"];
+          }
+        }
+      }
+      xhttp.open("GET", source, true);
+      xhttp.send();
+    }
+    function setUpdateBar(source, target, title, loadsettings) {
+      var xhttp = new XMLHttpRequest();
+      xhttp.onreadystatechange = function() {
+        if (this.readyState == 4 && this.status == 200) {
+          data = JSON.parse(this.responseText);
+          var elem = document.getElementById('myBar');
+          var progress = document.getElementById('myProgress');
+          var pc=data['pc'];
+          if (pc == 0) {
+            elem.style.display = "none";
+            progress.style.display = "none";
+          } else {
+            progress.style.display = "block";
+            elem.style.display = "block";
+            elem.style.width = pc +"%";
+            elem.innerHTML = data['text'];
+          }
+        }
+      }
+      xhttp.open("GET", "/getprogressbar", true);
+      xhttp.send();
+    }
+
+    setInterval(function() {
+      generateTable("/getpminfo","pm-table-container","PoolMaster:", 0);
+      generateTable("/getsvinfo","sv-table-container","SuperVisor:", 1);
+      setUpdateBar();
+    }, 900);
+  </script>
+  <div id="myProgress">
+    <div id="myBar"></div>
+  </div>
+  <div class="infotable" id="pm-table-container"></div>
+  <br>
+  <div class="infotable" id="sv-table-container"></div>
+</div>
+
+<!-- SETTINGS -->
+<div id="Settings" class="tabcontent">
+  <script>
+    function loadsettingsvalues() {
+      document.getElementById("MQTT Server").value = mqtt_server
+      document.getElementById("MQTT Port").value = mqtt_port;
+      document.getElementById("MQTT Topic").value = mqtt_topic;
+      document.getElementById("Update Host").value = update_host;
+      document.getElementById("Poolmaster Path").value = poolmasterpath;
+      document.getElementById("Nextion Path").value = nextionpath;
+    }
+  </script>
+  <br>
+  <button class="redButton" onclick="loadsettingsvalues()">Click me to load values</button><br>
+  <br>
+  <form class="formsettings" id="svsettings" action='/set' method='get'>
+    <label for="MQTT Server">MQTT Server:</label>
+    <input type="text" name="MQTT Server" id="MQTT Server">
+    <br>
+    <label for="MQTT Port">MQTT Port :</label>
+    <input type="text" name="MQTT Port" id="MQTT Port">
+    <br>
+    <label for="MQTT Topic">MQTT Topic :</label>
+    <input type="text" name="MQTT Topic" id="MQTT Topic">
+    <br>
+    <label for="MQTT Username">MQTT Username :</label>
+    <input type="text" name="MQTT Username" id="MQTT Username">
+    <br>
+    <label for="MQTT Password">MQTT Password :</label>
+    <input type="password" name="MQTT Password" id="MQTT Password">
+    <br>
+    <br>
+    <label for="Update Host">Update Host (http://):</label>
+    <input type="text" name="Update Host" id="Update Host">
+    <br>
+    <label for="Poolmaster Path">PoolMaster FW Path:</label>
+    <input type="text" name="Poolmaster Path" id="Poolmaster Path">
+    <br>
+    <label for="Nextion Path">Display FW Path:</label>
+    <input type="text" name="Nextion Path" id="Nextion Path">
+    <br>
+    <br>
+  <button type="submit" class="normalButton">Save</button>
+  <br>
+ </form>
+  <br>
+</div>
+
+<!-- LOGS -->
+<div id="Logs" class="tabcontent">
+  <script>
+    var ScrollFlag = 0;
+    function StopScroll()  { ScrollFlag = 0; }
+    function StartScroll() { ScrollFlag = 1; }
+    function ScrollClean() { 
+      var container = document.getElementById('textblock-logs');
+      container.innerText = "";
+    }
+    setInterval(function() {
+      var xhttp = new XMLHttpRequest();
+      xhttp.onreadystatechange = function() {
+        if (this.readyState == 4 && this.status == 200) {
+          var container = document.getElementById('textblock-logs');
+          var newElm = document.createElement('p');
+          newElm.innerText = this.responseText.replace(/(\n\n|\r)/gm,"\n");
+          container.appendChild(newElm);
+          if (ScrollFlag == 1) {
+            scrollingElement = (document.scrollingElement || document.body);
+            scrollingElement.scrollTop = scrollingElement.scrollHeight;
+           //container.scrollTop = scrollingElement.scrollHeight; 
+          }}}
+      xhttp.open("GET", "/getlogs", true);
+      xhttp.send();
+    }, 500);
+  </script>
+  <h3 id="Logs">Logs from PoolMaster (PM) and SuperVisor (SV)</h3>
+  <br>
+  <button onClick="StopScroll()">Stop Scrolling</button>
+  <button onClick="StartScroll()">Start Scrolling</button>
+  <button onClick="ScrollClean()">Clean</button>
+  <hr /><div class="textblocklogs" id="textblock-logs"><p>Logs</p></div><hr />
+  <button onClick="StopScroll()">Stop Scrolling</button>
+  <button onClick="StartScroll()">Start Scrolling</button>
+  <button onClick="ScrollClean()">Clean</button>
+  <div><p></p></div>
+</div>
+
+<!-- TOOLS -->
+<div id="Tools" class="tabcontent">
+  <br> 
+  <form action="/set">
+    <input type="hidden" id="rebootPoolMaster" name="rebootPoolMaster">
+    <input type="submit" class="blackButton" value="Restart PoolMaster">
+  </form>
+  <br>
+  <form action="/set">
+    <input type="hidden" id="rebootSuperVisor" name="rebootSuperVisor">
+    <input type="submit" class="blackButton" value="Restart SuperVisor">
+  </form>
+  <br>
+  <br>
+  <form action="/set">
+    <input type="hidden" id="UpdatePoolMaster" name="UpdatePoolMaster">
+    <input type="submit" class="redButton" value="Update PoolMaster">
+  </form>
+  <br>
+  <form action="/set">
+    <input type="hidden" id="UpdateNextion" name="UpdateNextion">
+    <input type="submit" class="redButton" value="Update Display Nextion">
+  </form>
+  <br>
+    <a href="/update"><button class="redButton">Update SuperVisor (Elg. OTA)</button></a>
+  <br><br>
+</div>
+
+<!-- ABOUT -->
+<div id="About" class="tabcontent">
+  <br>
+  <br>
+  <hr />
+  <div class="textblockabout">
+  THE SOFTWARE IS PROVIDED “AS IS”,
+  <br>
+  WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+  <br> 
+  INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+  <br>
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. 
+  <br>
+  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, 
+  <br>
+  DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, 
+  <br>TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE 
+  <br>
+  OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+  </div><hr/>
+  <br> 
+  <hr />
+  <div class="textblockabout">
+  Credits:
+  <br><a class="marge5" href="https://github.com/christophebelmont">Christophe Belmont</a>
+  <br><a class="marge5" href="https://github.com/Gixy31/ESP32-PoolMaster">Gixy31</a>
+  <br><a class="marge5" href="https://github.com/Loic74650/PoolMaster">Loic74650</a>
+  </div><hr/>
+  <p>
+</div>
+
+  <script>
+    startTab();
+  </script>
+</body></html>)rawliteral";
+
+void InitSortedSettings()
 {
-  // This is a test
-  // Create html pages with inline CSS 
-  // todo :create nicer interface
-  // https://codingtorque.com/tabs-using-pure-html-and-css/
-  // should fit in mobile phone screen
-  // logo convertor https://elmah.io/tools/base64-image-encoder/
+  // JSON will have values in this order
+  // Required to display webpage info correctly.
+  const char sortedSettings[][20] = {
+    "Chip Model",
+    "Flash Size",
+    "CPU Freq (Mhz)",
+    "CPU Cores",
+    "Firmware",
+    "Display Firmware",
+    "Hostname",
+    "IP Address",
+    "MAC Address",
+    "Wifi SSID",
+    "Wifi RSSI",
+    "LED",
+    "Uptime",
+    "HEAP size (KB)",
+    "HEAP free (KB)",
+    "HEAP maxAlloc",
+    "Update Host",
+    "Poolmaster Path",
+    "Nextion Path",
+    "MQTT Server",
+    "MQTT Port",
+    "MQTT Topic",
+  };
+
+  int n = sizeof(sortedSettings)/sizeof(sortedSettings[0]);
+  for (int i=0; i<n; i++) {
+    const char* key=sortedSettings[i];
+    PMInfo[key]     = "unknown";
+    SVSettings[key] = "unknown";
+  } 
+  // remove unwanted info
+  PMInfo["MQTT Username"]         = "none";
+  PMInfo["MQTT Password"]         = "none";
+  PMInfo["Update Host"]           = "none";
+  PMInfo["Poolmaster Path"]       = "none";
+  PMInfo["Nextion Path"]          = "none";
+  SVSettings["LED"]               = "none";
+  SVSettings["Display Firmware"]  = "none";
   
-  String h = "";
-  String css="";
-  css += "li {display:inline; padding-right: 1em;}";
-  css += ".stick { position: sticky; top: 0; padding: 10px 16px; background-color: Gainsboro;}"; // doesn't work !
-  //css += "li {display:inline; position: sticky; top: 0; background-color: Gainsboro;}";
-  css += ".submitButton {";
-  css += "  background-color: #4caf50;";
-  css += "  display: inline-block; font-weight: bold; border: 1px solid #2d6898;";
-  css += "  color: white;";
-  css += "  padding: 10px 15px;";
-  css += "  border-radius: 4px;";
-  css += "  cursor: pointer;";
-  css += "  margin-right: 10px; }";
-  css += ".UpdateButton {";
-  css += "  background-color: FireBrick;";
-  css += "  display: inline-block; font-weight: bold; border: 1px solid #2d6898;";
-  css += "  color: white;";
-  css += "  padding: 10px 15px;";
-  css += "  border-radius: 4px;";
-  css += "  cursor: pointer;";
-  css += "  margin-right: 10px; }";
-  css += ".shareButton {";
-  css += "  background-color: SkyBlue;";
-  css += "  display: inline-block; font-weight: bold; border: 1px solid #2d6898;";
-  css += "  color: white;";
-  css += "  padding: 10px 15px;";
-  css += "  border-radius: 4px;";
-  css += "  cursor: pointer;";
-  css += "  margin-right: 10px; }";
-  css += ".normalButton {";
-  css += "  background-color: Silver;";
-  css += "  display: inline-block; font-weight: bold; border: 1px solid #2d6898;";
-  css += "  color: white;";
-  css += "  padding: 10px 15px;";
-  css += "  border-radius: 4px;";
-  css += "  cursor: pointer;";
-  css += "  margin-right: 10px; }";
-  css += ".rebootButton {";
-  css += "  background-color: Black;";
-  css += "  display: inline-block; font-weight: bold; border: 1px solid #2d6898;";
-  css += "  color: white;";
-  css += "  padding: 10px 15px;";
-  css += "  border-radius: 4px;";
-  css += "  cursor: pointer;";
-  css += "  margin-right: 10px; }";
-
-  css += "img { float: left; margin-right: 20px; }";
-  css += ".text-container { margin-left: 20px; }";
-  //css += "form { display: inline-block;text-align: left;max-width: 400px;margin: 20px auto;}";
-  css += "label { display: block; width: 200px; margin-top: 8px;}";
-  //css += "input { width: 100%; padding: 8px; margin-bottom: 12px; box-sizing: border-box;}";
-
-  h += "<!DOCTYPE HTML><html><head><title>PoolMaster SuperVisor</title>";
-  //h += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">";
-  h += "<style>";
-  h += css;
-  h += "</style>";
-
-  h += "</head>";
-  h += "<body>";
-  h +=  "<div class=\"image-container\">";
-  h +=    "<img src=\"data:image/jpeg;base64,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\" />";
-  h +=    "<div class=\"text-container\">";
-  h +=      "<p><h1>PoolMaster SuperVisor</h1></p>";
-  h +=    "</div>";
-  h +=    "<ul>";
-  h +=      "<li class=\"stick\"><a href=\"#Info\">Info</a></li>";
-  h +=      "<li class=\"stick\"><a href=\"#Settings\">Settings</a></li>";
-  h +=      "<li class=\"stick\"><a href=\"#Update\">Update</a></li>";
-  #ifdef TARGET_WEBSERIAL
-  h +=      "<li class=\"stick\"><a href=\"#Logs\">Logs</a></li>";
-  #endif
-  h +=    "</ul>";
-
-  // Info
-  h +=    "<br>";
-  h +=    "<h2 id=\"Info\">Information:</h1>";
-  h +=      "<p>";
-  h +=      "<table border=\"0\">";
-  h +=        "<tr><td>PoolMaster Version :</td><td>"     + String(PoolMaster_Version)        + "</td></tr>";
-  h +=        "<tr><td>PoolMaster TFT Version :</td><td>" + String(PoolMaster_TFTVersion)     + "</td></tr>";
-  h +=        "<tr><td>PoolMaster Hostname :</td><td>"    + String(PoolMaster_Hostname)       + "</td></tr>";
-  h +=        "<tr><td>PoolMaster IP Address :</td><td>"  + String(PoolMaster_IP)             + "</td></tr>";
-  h +=        "<tr><td>PoolMaster MAC Address :</td><td>" + String(PoolMaster_MAC) 
-             + "</td></tr>";
-  h +=        "<tr><td>PoolMaster Wifi SSID :</td><td>"   + String(PoolMaster_SSID)           + "</td></tr>";
-  h +=        "<tr><td>PoolMaster Wifi RSSI :</td><td>"   + String(PoolMaster_RSSI)           + "</td></tr>";
-  h +=        "<tr><td>PoolMaster MQTT Server :</td><td>" + String(PoolMaster_MQTT_Server)    + "</td></tr>";
-  h +=        "<tr><td>PoolMaster MQTT Topic :</td><td>"  + String(PoolMaster_MQTT_Topic)     + "</td></tr>";
-  h +=        "<tr><td>PoolMaster Uptime :</td><td>"      + String(PoolMaster_Uptime)         + "</td></tr>";
-  h +=        "<tr><td>PoolMaster LEDs :</td><td>"        + String(convert2bin(PoolMaster_StatusLEDs))+ "</td></tr>";
-  h +=        "<tr><td></td><td></td></tr>";
-  h +=        "<tr><td></td><td></td></tr>";
-  h +=        "<tr><td></td><td></td></tr>";
-  h +=        "<tr><td>SuperVisor Version :</td><td>"     + String(PMSV_VERSION)              + "</td></tr>";
-  h +=        "<tr><td>SuperVisor Hostname :</td><td>"    + String(WiFi.getHostname())        + "</td></tr>";
-  h +=        "<tr><td>SuperVisor IP Address :</td><td>"  + WiFi.localIP().toString()         + "</td></tr>";
-  h +=        "<tr><td>SuperVisor MAC Address :</td><td>" + WiFi.macAddress();                + "</td></tr>";
-  h +=        "<tr><td>SuperVisor Wifi SSID :</td><td>"   + wifiManager.getWiFiSSID()         + "</td></tr>";
-  h +=        "<tr><td>SuperVisor Wifi RSSI :</td><td>"   + String(WiFi.RSSI())               + "</td></tr>";
-  h +=        "<tr><td>SuperVisor MQTT Server :</td><td>" + mqtt_server + ":"+ mqtt_port      + "</td></tr>";
-  h +=        "<tr><td>SuperVisor MQTT Topic :</td><td>"  + mqtt_topic                        + "</td></tr>";
-  uptime();
-  h +=        "<tr><td>SuperVisor Uptime :</td><td>"      + String(currentUptime)             + "</td></tr>";
-  h +=      "</table>";
-  h +=      "</p>";
-  h +=      "<button id=\"refresh\" class=\"normalButton\" onclick=\"document.location.reload(false)\"> Refresh </button>";
-  h +=       "<br><br>";
-  h +=       "<form action=\"/get\">";
-  h +=            "<input type=\"hidden\" id=\"rebootPoolMaster\" name=\"rebootPoolMaster\">";
-  h +=            "<input type=\"submit\" class=\"rebootButton\" id=\"rebootPoolMaster\" value=\"Restart PoolMaster\">";
-  h +=       "</form>";
-  h +=       "<br>";
-  h +=       "<form action=\"/get\">";
-  h +=            "<input type=\"hidden\" id=\"rebootSuperVisor\" name=\"rebootSuperVisor\">";
-  h +=            "<input type=\"submit\" class=\"rebootButton\" id=\"rebootSuperVisor\" value=\"Restart SuperVisor\">";
-  h +=       "</form>";
-  h +=    "<br>";
-
-  // Settings
-  h +=    "<h2 id=\"Settings\">Settings:</h1>";
-  h +=      "<p>";
-  h +=        "<form action=\"/get\">";
-  h +=            "<input type=\"hidden\" id=\"autoconfnet\" name=\"autoconfnet\">";
-  h +=            "<input type=\"submit\" class=\"shareButton\" id=\"shareNetButton\" value=\"Auto-configure PoolMaster network\">";
-  h +=        "</form>";
-  h +=        "<br><br>";
-  h +=        "<form action=\"/get\">";
-  h +=            "<label for=\"mqtt_server\">MQTT Server:</label>";
-  h +=            "<input type=\"text\" id=\"mqtt_server\" name=\"mqtt_server\" size=30 value=\"" + mqtt_server + "\">";
-  h +=            "<br>";
-  h +=            "<label for=\"mqtt_port\">MQTT Port :</label>";
-  h +=            "<input type=\"text\" id=\"mqtt_port\" name=\"mqtt_port\" size=30 value=\"" + mqtt_port + "\">";
-  h +=            "<br>";
-  h +=            "<label for=\"mqtt_topic\">MQTT Topic :</label>";
-  h +=            "<input type=\"text\" id=\"mqtt_topic\" name=\"mqtt_topic\" size=30 value=\"" + mqtt_topic + "\">";
-  h +=            "<br>";
-  h +=            "<label for=\"mqtt_username\">MQTT Username :</label>";
-  h +=            "<input type=\"text\" id=\"mqtt_username\" name=\"mqtt_username\" size=30 value=\"" + mqtt_username + "\">";
-  h +=            "<br>";
-  h +=            "<label for=\"mqtt_password\">MQTT Password :</label>";
-  h +=            "<input type=\"password\" id=\"mqtt_password\" name=\"mqtt_password\" size=30 value=\"" + mqtt_password + "\">";
-  h +=            "<br>";
-  h +=            "<br>";
-  h +=            "<input type=\"submit\" class=\"submitButton\" id=\"submitButton\" value=\"Save MQTT settings\">";
-  h +=            "<br>";
-  //h +=            "<h4>(then wait few minutes)</h4>";
-  h +=        "</form>";
-  h +=        "<br>";
-  h +=        "<form action=\"/get\">";
-  h +=            "<input type=\"hidden\" id=\"autoconfmqtt\" name=\"autoconfmqtt\">";
-  h +=            "<input type=\"submit\" class=\"shareButton\" id=\"shareMqttButton\" value=\"Auto-configure PoolMaster MQTT\">";
-  h +=        "</form>";
-  h +=        "<br>";
-
-#ifdef TARGET_PAPERTRAIL
-  h +=        "<br><br>";
-  h +=        "<form action=\"/get\">";
-  h +=            "<label for=\"papertrailhost\">Papertrail Server :</label>";
-  h +=            "<input type=\"text\" id=\"papertrailhost\" name=\"papertrailhost\" size=30 value=\"" + papertrailhost + "\">";
-  h +=            "<br>";
-  h +=            "<label for=\"papertrailport\">Papertrail Port :</label>";
-  h +=            "<input type=\"text\" id=\"papertrailport\" name=\"papertrailport\" size=30 value=\"" + papertrailport + "\">";
-  h +=            "<br>";
-  h +=            "<br>";
-  h +=            "<input type=\"submit\" class=\"submitButton\" id=\"submitButton\" value=\"Save Papertrail settings\">";
-  h +=            "<br>";
-  h +=        "</form>";
-  #endif
-
-  h +=      "</p>";
-  h +=    "<br>";
-
-  // Update
-  h +=    "<h2 id=\"Update\">Update:</h1>";
-  h +=      "<p>";
-  h +=        "<form action=\"/get\">";
-  h +=          "<label for=\"Updatehost\">Update Host (http):</label>";
-  h +=          "<input type=\"text\" id=\"Updatehost\" name=\"Updatehost\" size=30 value=\"" + Updatehost + "\">";
-  h +=          "<br>";
-  h +=          "<label for=\"poolmasterpath\">PoolMaster firmware path :</label>";
-  h +=          "<input type=\"text\" id=\"poolmasterpath\" name=\"poolmasterpath\" size=30 value=\"" + poolmasterpath + "\">"; 
-  h +=          "<br>";
-  h +=          "<label for=\"nextionpath\">Nextion firmware path :</label>";
-  h +=          "<input type=\"text\" id=\"nextionpath\" name=\"nextionpath\" size=30 value=\"" + nextionpath + "\">";    
-  h +=          "<br>";
-  h +=          "<br>";
-  h +=          "<input type=\"submit\" class=\"submitButton\" id=\"submitButton\" value=\"Save Update settings\">";
-  h +=        "</form>";
-  h +=        "<br><br>";
-  
-  h +=        "<form action=\"/get\">";
-  h +=            "<input type=\"hidden\" id=\"UpdatePoolMaster\" name=\"UpdatePoolMaster\">";
-  h +=            "<input type=\"submit\" class=\"UpdateButton\" id=\"UpdatePoolMaster\" value=\"Update PoolMaster\">";
-  h +=        "</form>";
-  h +=        "<br><br>";
-  h +=        "<form action=\"/get\">";
-  h +=            "<input type=\"hidden\" id=\"UpdateNextion\" name=\"UpdateNextion\">";
-  h +=            "<input type=\"submit\" class=\"UpdateButton\" id=\"UpdateNextion\" value=\"Update Display Nextion\">";
-  h +=        "</form>";
-  h +=        "<br><br>";
-  h +=        "<a href=\"/update\"><button class=\"UpdateButton\">Update SuperVisor (OTA)</button></a>";
-  h +=        "<br><br>";
-  h +=      "</p>";
-#ifdef TARGET_WEBSERIAL
-  // Webserial
-  h +=    "<h2 id=\"Logs\">Logs:</h1>";
-  h +=      "<p>";
-  h +=        "<br>";
-  h +=        "<embed type=\"text/html\" src=\"/webserial\"  width=\"700\" height=\"1000\">";
-  h +=     "</p>";
-#endif
-  h += "</body></html>";
-  return h;
-} 
+  // load static info
+  SVSettings["MAC Address"]       = WiFi.macAddress();
+  SVSettings["Firmware"]          = PMSV_VERSION;
+  SVSettings["Chip Model"]        = ESP.getChipModel();
+  SVSettings["Flash Size"]        = ESP.getFlashChipSize();
+  SVSettings["CPU Freq (Mhz)"]    = ESP.getCpuFreqMHz();
+  SVSettings["CPU Cores"]         = ESP.getChipCores();
+}
 
 void loadSettings()
 {
+  InitSortedSettings();
   preferences.begin("PMSV", true);
-  //hostname = preferences.getString("hostname", "");
-  preferences.getString("hostname",hostname,15); 
+  //hostname = preferences.getString("Hostname", "");
+  preferences.getString("Hostname",hostname,15);
 
-  mqtt_server   = preferences.getString("mqtt_server", defaultmqtt_server);
-  mqtt_port     = preferences.getString("mqtt_port", defaultmqtt_port);
-  mqtt_topic    = preferences.getString("mqtt_topic", defaultmqtt_topic);
-  mqtt_username = preferences.getString("mqtt_username", defaultmqtt_username);
-  mqtt_password = preferences.getString("mqtt_password", defaultmqtt_password);
+  SVSettings["Hostname"]         = hostname;
 
-  Updatehost     = preferences.getString("Updatehost", defaultUpdatehost);
-  poolmasterpath  = preferences.getString("poolmasterpath", defaultpoolmasterpath);
-  nextionpath     = preferences.getString("nextionpath", defaultnextionpath);
+  SVSettings["MQTT Server"]      = preferences.getString("MQTT Server", defaultmqtt_server);
+  SVSettings["MQTT Port"]        = preferences.getString("MQTT Port", defaultmqtt_port);
+  SVSettings["MQTT Topic"]       = preferences.getString("MQTT Topic", defaultmqtt_topic);
+  SVSettings["MQTT Username"]    = preferences.getString("MQTT Username", defaultmqtt_username);
+  SVSettings["MQTT Password"]    = preferences.getString("MQTT Password", defaultmqtt_password);
+
+  SVSettings["Update Host"]      = preferences.getString("Update Host", defaultUpdatehost);
+  SVSettings["Poolmaster Path"]  = preferences.getString("Poolmaster Path", defaultPoolmasterPath);
+  SVSettings["Nextion Path"]     = preferences.getString("Nextion Path", defaultNextionPath);
 
 #ifdef TARGET_PAPERTRAIL
-  papertrailhost  = preferences.getString("nextionpath", defaultpapertrailhost);
-  papertrailport  = preferences.getString("nextionpath", defaultpapertrailport);
+  SVSettings["Papertrail Host"]  = preferences.getString("Nextion Path", defaultpapertrailhost);
+  SVSettings["Papertrail Port"]  = preferences.getString("Nextion Path", defaultpapertrailport);
 #endif
 
   preferences.end();
 }
 
+String WebHandleLogs()
+{ 
+  String Slogs = "";
+  while (char* theline = myLogsRingBuffer.pull()) {
+    Slogs += String(theline) + "\n";
+  }
+  return Slogs; 
+};
+
+String WebHandleProgressBar()
+{ 
+  char Payload[PAYLOAD_BUFFER_LENGTH];
+  sprintf(Payload, "{ \"text\":\"%s\", \"pc\":\"%3.1f%\"}", barBuf, percentCounter);
+  return String(Payload);
+}; 
+
+String WebHandlePMInfo()
+{ 
+  if (OTAinProgress) return String("");
+  char Payload[PAYLOAD_BUFFER_LENGTH];
+  size_t n = serializeJson(PMInfo, Payload);
+  return String(Payload);
+}; 
+
+String WebHandleSVSettings()
+{ 
+  if (OTAinProgress) return String("");
+  char buffer[15];
+  upcurrenttime();
+  SVSettings["Uptime"]      = currentUptime;
+  SVSettings["Hostname"]    = WiFi.getHostname();
+  SVSettings["IP Address"]  = WiFi.localIP().toString();
+  SVSettings["Wifi SSID"]   = wifiManager.getWiFiSSID();
+  SVSettings["Wifi RSSI"]   = WiFi.RSSI();
+  dtostrf(ESP.getHeapSize() / 1024.0, 3, 3, buffer);
+  SVSettings["HEAP size (KB)"] = buffer;
+  dtostrf(ESP.getFreeHeap() / 1024.0, 3, 3, buffer);
+  SVSettings["HEAP free (KB)"] = buffer;
+  dtostrf(ESP.getMaxAllocHeap() / 1024.0, 3, 3, buffer);
+  SVSettings["HEAP maxAlloc"]  = buffer;
+
+  // remove unnecessary data
+  JsonDocument cleanJson = SVSettings;
+  cleanJson.remove("MQTT Username");
+  cleanJson.remove("MQTT Password");
+  char Payload[PAYLOAD_BUFFER_LENGTH];
+  size_t n = serializeJson(cleanJson, Payload);
+
+  return String(Payload);
+}; 
+
+void WebSetActionManageParam(AsyncWebServerRequest *request, const char* key) 
+{
+  if (request->hasParam(key)) {
+      String setting=request->arg(key);
+      if (setting != "") {
+        SVSettings[key] = String(setting);;
+        preferences.putString(key, setting);
+      }
+    }
+}
+void WebSetAction(AsyncWebServerRequest *request) 
+{
+  preferences.begin("PMSV", false);
+  WebSetActionManageParam(request, "MQTT Server");
+  WebSetActionManageParam(request, "MQTT Port");
+  WebSetActionManageParam(request, "MQTT Topic");
+  WebSetActionManageParam(request, "MQTT Username");
+  WebSetActionManageParam(request, "MQTT Password");
+  WebSetActionManageParam(request, "Update Host");
+  WebSetActionManageParam(request, "Poolmaster Path");
+  WebSetActionManageParam(request, "Nextion Path");
+  
+#ifdef TARGET_PAPERTRAIL 
+  WebSetActionManageParam(request, "Papertrail Host");
+  WebSetActionManageParam(request, "Papertrail Port");
+#endif  
+  preferences.end();
+
+  if (request->hasParam("rebootSuperVisor")) {
+    request->redirect("/"); 
+    delay(300);
+    ESP.restart();
+  }
+
+  if (request->hasParam("rebootPoolMaster")) 
+    mustRebootPoolMaster = true;
+    
+  if (request->hasParam("UpdatePoolMaster"))
+    mustUpdatePoolMaster = true;
+
+  if (request->hasParam("UpdateNextion"))
+    mustUpdateNextion = true;
+  
+  request->redirect("/"); 
+}
+
 void InitWebServer()
 {
-
   initElegantOTA();
 
   #ifdef TARGET_WEBSERIAL
   // Start WebSerial
   WebSerial.begin(&Webserver);
   WebSerial.onMessage(&recvMsg); /* Attach Message Callback */
-  Webserver.onNotFound([](AsyncWebServerRequest* request) { request->redirect("/"); });
   #endif
 
    // Send web page with input fields to client
   Webserver.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(200, "text/html", createHTML());
+    request->send(200, "text/html", index_html);
   });
-
-  // Send a GET request to <ESP_IP>
-  Webserver.on("/get", HTTP_GET, [] (AsyncWebServerRequest *request) {
-  
-    preferences.begin("PMSV", false);
-    if (request->hasParam("mqtt_server")) {
-      mqtt_server = request->getParam("mqtt_server")->value();
-      preferences.putString("mqtt_server", mqtt_server);
-    }
-    if (request->hasParam("mqtt_port")) {
-      mqtt_port = request->getParam("mqtt_port")->value();
-      preferences.putString("mqtt_port", mqtt_port);
-    }
-    if (request->hasParam("mqtt_topic")) {
-      mqtt_topic = request->getParam("mqtt_topic")->value();
-      preferences.putString("mqtt_topic", mqtt_topic);
-    }
-    if (request->hasParam("mqtt_username")) {
-      mqtt_username = request->getParam("mqtt_username")->value();
-      preferences.putString("mqtt_username", mqtt_username);
-    }
-    if (request->hasParam("mqtt_password")) {
-      mqtt_password = request->getParam("mqtt_password")->value();
-      preferences.putString("mqtt_password", mqtt_password);
-    }
-    if (request->hasParam("autoconfnet")) {
-      autoConfNetwork = autoConfTimeout;
-    }
-    if (request->hasParam("autoconfmqtt")) {
-      autoConfMQTT = autoConfTimeout;
-    }
-
-    if (request->hasParam("Updatehost")) {
-      Updatehost = request->getParam("Updatehost")->value();
-      preferences.putString("Updatehost", Updatehost);
-    }
-    if (request->hasParam("poolmasterpath")) {
-      poolmasterpath = request->getParam("poolmasterpath")->value();
-      preferences.putString("poolmasterpath", poolmasterpath);
-    }
-    if (request->hasParam("nextionpath")) {
-      nextionpath = request->getParam("nextionpath")->value();
-      preferences.putString("nextionpath", nextionpath);
-    }
-
-#ifdef TARGET_PAPERTRAIL    
-    if (request->hasParam("papertrailhost")) {
-      papertrailhost = request->getParam("papertrailhost")->value();
-      preferences.putString("papertrailhost", papertrailhost);
-    }
-    
-    if (request->hasParam("papertrailport")) {
-      papertrailport = request->getParam("papertrailport")->value();
-      preferences.putString("papertrailport", papertrailport);
-    }
-#endif
-
-    preferences.end();
-
-    if (request->hasParam("rebootSuperVisor")) {
-      request->redirect("/"); 
-      delay(300);
-      ESP.restart();
-    }
-
-    if (request->hasParam("rebootPoolMaster")) {
-      mustRebootPoolMaster = true;
-    }
-    
-    if (request->hasParam("UpdatePoolMaster")) {
-      // does not work with the loop
-      mustUpdatePoolMaster = true;
-      // does not work too when called directly !
-      //  TaskUpdatePoolMaster();
-    }
-
-    if (request->hasParam("UpdateNextion")) {
-      mustUpdateNextion = true;
-    }
-
-    request->redirect("/"); 
-
-    });
+  Webserver.onNotFound([](AsyncWebServerRequest* request) { request->redirect("/"); });
+  Webserver.on("/getlogs", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(200, "text/html", WebHandleLogs());
+  });
+  Webserver.on("/getpminfo", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(200, "text/html", WebHandlePMInfo());
+  });
+  Webserver.on("/getsvinfo", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(200, "text/html", WebHandleSVSettings());
+  });
+  Webserver.on("/getprogressbar", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(200, "text/html", WebHandleProgressBar());
+  });
+  Webserver.on("/set", HTTP_GET, WebSetAction);
+  //Webserver.on("/set", HTTP_POST, WebSetAction);
 
   Webserver.begin();
+}
+
+
+///////////// Update NEXTION and al ////////////////
+////////////////////////////////////////////////////
+void TheTasksLoop(void *pvParameters)
+{
+  static UBaseType_t hwm=0;     // free stack size
+  rtc_wdt_protect_off();
+  rtc_wdt_disable();
+  int delaymqtt=0; 
+  for (;;) {
+    delay(500);
+    if(mustUpdateNextion) {
+      mustUpdateNextion = false;
+      TaskUpdateNextion();
+    }
+    if (mustUpdatePoolMaster) {
+      mustUpdatePoolMaster = false;
+      TelnetToTaskUpdatePoolMaster();
+    }
+    if (mustRebootPoolMaster) {
+      mustRebootPoolMaster = false;
+      pinMode(ENPin, OUTPUT);
+      digitalWrite(ENPin, LOW);
+      delay(pdMS_TO_TICKS(200));
+      pinMode(ENPin, OUTPUT);
+      digitalWrite(ENPin, HIGH);
+      pinMode(ENPin, INPUT);
+    }
+    // send mqtt data every xx cycles
+    if (delaymqtt++ == 10) {
+      delaymqtt=0;
+      mqttPublish();
+    } 
+    stack_mon(hwm);
+  }
 }
 
 //////////////////////// SETUP //////////////////////////
 /////////////////////////////////////////////////////////
 void setup() {
   Serial.begin(115200);
+
   loadSettings();
 
   // Start WifiManager and resetPin
@@ -1213,7 +1514,7 @@ void setup() {
     //* this is the 1st reboot after wifimanager
     String customhostname = custom_hostname.getValue();
     preferences.begin("PMSV", false);
-    preferences.putString("hostname", customhostname);
+    preferences.putString("Hostname", customhostname);
     preferences.end();
     delay(pdMS_TO_TICKS(1000));
 		ESP.restart();    // ESP32 must reboot but why, anyway
@@ -1262,7 +1563,6 @@ void setup() {
   Local_Logs_Dispatch("Ready! Use 'telnet ");
   Local_Logs_Dispatch(" 23' to connect");
 
-  
 #ifdef TARGET_PAPERTRAIL
   // Start PaperTrail Logging
   if ((papertrailhost != "") && (papertrailhost != defaultpapertrailhost)) {
@@ -1284,15 +1584,13 @@ void setup() {
   xTaskCreatePinnedToCore(
     TheTasksLoop, 
     "TheTasksLoop",
-//    4500, // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
-    6000, // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+    4500, // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
     NULL,  // No parameter is used
     1,  // Priority
     nullptr,  // Task handle is not used here
     app_cpu
   );
 }
-
 
 void WifiManagerCheckResetLoop() {
   // check for button press
@@ -1312,6 +1610,22 @@ void WifiManagerCheckResetLoop() {
   }
 }
 
+void parseMsgFromPM(char* msg)
+{
+  char delim[2];
+  delim[0] = _DELIMITER_[0];
+  delim[1] = 0;
+  char *end;
+  while (end = strstr(msg, delim)) {
+    *end = 0;
+    char *key = msg;
+    char *val = strstr(msg, "=");
+    *val = 0;
+    val++;
+    if (key && val) PMInfo[key] = val;
+    msg=end+1;
+  }
+}
 
 
 //////////////////////// MAIN LOOP //////////////////////////
@@ -1364,7 +1678,13 @@ void loop() {
     //check UART for data
     if (Serial2.available()) {
       if (readUntil(Serial2, sbuf, "\n")) {
-        // `buf` contains the delimiter, it can now be used for parsing.     
+        // `buf` contains the delimiter, it can now be used for parsing.
+
+        if (sbuf[0] == _DELIMITER_[0]) {  // is it a private message from PoolMaster ?
+          parseMsgFromPM(sbuf+1);        
+        }
+        else {
+
         #ifdef TARGET_TELNET 
         //push UART data to all connected telnet clients
         for (i = 0; i < MAX_SRV_CLIENTS; i++) {
@@ -1384,7 +1704,8 @@ void loop() {
         WebSerial.printf("%s",sbuf);
         #endif
 
-        
+        myLogsRingBuffer.push("PM ", sbuf);
+
 #ifdef TARGET_PAPERTRAIL
         // Cloud Logger PaperTrail
         if ((papertrailhost != "") && (papertrailhost != defaultpapertrailhost)) {
@@ -1426,6 +1747,7 @@ void loop() {
         }
 #endif
       }
+      }
     }
   } else {
     Local_Logs_Dispatch("WiFi not connected!");
@@ -1448,3 +1770,4 @@ void loop() {
   WebSerial.loop();
   #endif
 }
+
