@@ -870,7 +870,7 @@ body{
   }
 .textblockabout {
   background-color: white;
-  font-size: medium;
+  font-size: small;
   }
 .infotable {
   background-color: white;
